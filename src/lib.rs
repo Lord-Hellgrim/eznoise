@@ -2,6 +2,7 @@
 #![feature(concat_bytes)]
 #![feature(portable_simd)]
 
+use std::net::TcpStream;
 use std::{io::Write, u64};
 use std::io::Read;
 
@@ -27,7 +28,15 @@ pub const PROTOCOL_NAME: &'static str = "Noise_NK_25519_AESGCM_SHA512";
 pub struct KeyPair {
     public_key: Option<[u8;32]>,
     private_key: Option<[u8;32]>,
+}
 
+impl KeyPair {
+    pub fn empty() -> KeyPair {
+        KeyPair {
+            private_key: None,
+            public_key: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -473,7 +482,7 @@ impl HandshakeState {
     /// Appends EncryptAndHash(payload) to the buffer.
     
     /// If there are no more message patterns returns two new CipherState objects by calling Split().
-    pub fn WriteMessage(&mut self, payload: &[u8], mut message_buffer: impl Write) -> Result<(), NoiseError> {
+    pub fn WriteMessage(&mut self, payload: &[u8], mut message_buffer: impl Write) -> Result<(CipherState, CipherState), NoiseError> {
 
         let pattern = self.message_patterns.remove(0);
         for token in pattern {
@@ -499,8 +508,8 @@ impl HandshakeState {
         }
         let ciphertext = self.symmetricstate.EncryptAndHash(payload);
         message_buffer.write_all(&ciphertext)?;
-
-        Ok(())
+        let (c1, c2) = self.symmetricstate.Split();
+        Ok((c1, c2))
     }
 
     /// Takes a byte sequence containing a Noise handshake message, and a payload_buffer to write the message's plaintext payload into. 
@@ -524,7 +533,7 @@ impl HandshakeState {
     /// Calls DecryptAndHash() on the remaining bytes of the message and stores the output into payload_buffer.
     
     /// If there are no more message patterns returns two new CipherState objects by calling Split().
-    pub fn ReadMessage(&mut self, mut message: impl Read, payload_buffer: &mut Vec<u8>)  -> Result<(CipherState, CipherState), NoiseError> {
+    pub fn ReadMessage(&mut self, mut message: impl Read, mut payload_buffer: impl Write)  -> Result<(CipherState, CipherState), NoiseError> {
         let pattern = self.message_patterns.remove(0);
         for token in pattern {
             match token {
@@ -573,7 +582,7 @@ impl HandshakeState {
             };
             let mut buf = Vec::new();
             message.read_to_end(&mut buf)?;
-            payload_buffer.extend_from_slice(&buf);
+            payload_buffer.write_all(&buf)?;
         }
         let (c1, c2) = self.symmetricstate.Split();
         Ok((c1, c2))
@@ -585,6 +594,48 @@ pub fn array32_from_slice(slice: &[u8]) -> [u8;32] {
     let mut buf = [0u8;32];
     buf.copy_from_slice(&slice[0..32]);
     buf
+}
+
+pub struct Connection {
+    sender: CipherState,
+    receiver: CipherState,
+    stream: TcpStream,
+}
+
+impl Connection {
+    pub fn send(&mut self, message: impl Read) {
+
+    }
+}
+
+pub fn initiate_connection(address: &str, username: &str, password: &str) -> Result<Connection, NoiseError> {
+    if !(username.len() <= 512 && password.len() <= 512) {
+        return Err(NoiseError::WrongState)
+    }
+    let mut stream = TcpStream::connect(address)?;
+    let mut rs = [0u8;32];
+    stream.read_exact(&mut rs)?;
+    let e = KeyPair::empty();
+    let mut handshake_state = HandshakeState::Initialize(
+        true,
+        &[],
+        KeyPair::empty(),
+        e,
+        Some(PublicKey::from(rs)),
+        None
+    );
+    let mut auth_buffer = [0u8;1024];
+    auth_buffer[0..username.len()].copy_from_slice(username.as_bytes());
+    auth_buffer[512..password.len()].copy_from_slice(password.as_bytes());
+    let (sender, receiver) = handshake_state.WriteMessage(&auth_buffer, &mut stream)?;
+
+    Ok(
+        Connection {
+            sender,
+            receiver,
+            stream,
+        }
+    )
 }
 
 #[cfg(test)]
