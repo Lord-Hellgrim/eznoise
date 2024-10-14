@@ -1,0 +1,1 @@
+Easy little Noise Protocol (https://noiseprotocol.org/noise.html) library primarily for use with EZDB
