@@ -3,6 +3,7 @@
 #![feature(portable_simd)]
 
 use std::net::TcpStream;
+use std::time::Duration;
 use std::{io::Write, u64};
 use std::io::Read;
 
@@ -134,7 +135,7 @@ pub fn DECRYPT<'inout>(k: [u8;HASHLEN], n: u64, ad: &[u8], ciphertext: &[u8]) ->
 
 /// Hashes some arbitrary-length data with a collision-resistant cryptographic hash function and returns an output of HASHLEN bytes.
 pub fn HASH(data: &[u8]) -> [u8;HASHLEN] {
-    let digest = ring::digest::digest(&ring::digest::SHA512, data);
+    let digest = ring::digest::digest(&ring::digest::SHA256, data);
     let mut hash = [0u8;HASHLEN];
     hash.copy_from_slice(digest.as_ref());
     hash
@@ -287,8 +288,9 @@ impl CipherState {
     ///If k is non-empty returns ENCRYPT(k, n++, ad, plaintext). Otherwise returns plaintext.
     pub fn EncryptWithAd(&mut self, ad: &[u8], plaintext: &[u8]) -> Vec<u8> {
         if self.HasKey() {
+            let temp = ENCRYPT(self.k.unwrap(), self.n, ad, plaintext).unwrap();
             self.n += 1;
-            ENCRYPT(self.k.unwrap(), self.n, ad, plaintext).unwrap()
+            temp
         } else {
             plaintext.to_vec()
         }
@@ -384,7 +386,7 @@ impl SymmetricState {
     /// Note that if k is empty, the EncryptWithAd() call will set ciphertext equal to plaintext.
     pub fn EncryptAndHash(&mut self, plaintext: &[u8]) -> Vec<u8>{
         let ciphertext = self.cipherstate.EncryptWithAd(&self.h, plaintext);
-        self.MixHash(&plaintext);
+        self.MixHash(&ciphertext);
         ciphertext
     }
 
@@ -506,7 +508,9 @@ impl HandshakeState {
                 Token::ss => self.symmetricstate.MixKey(DH(self.s.clone(), self.rs.unwrap())),
             };
         }
+        // println!("payload: {:x?}", payload);
         let ciphertext = self.symmetricstate.EncryptAndHash(payload);
+        println!("ciphertext: {}", ciphertext.len());
         message_buffer.write_all(&ciphertext)?;
         let (c1, c2) = self.symmetricstate.Split();
         Ok((c1, c2))
@@ -534,14 +538,17 @@ impl HandshakeState {
     
     /// If there are no more message patterns returns two new CipherState objects by calling Split().
     pub fn ReadMessage(&mut self, mut message: impl Read, mut payload_buffer: impl Write)  -> Result<(CipherState, CipherState), NoiseError> {
+        println!("calling ReadMessage()");
         let pattern = self.message_patterns.remove(0);
         for token in pattern {
             match token {
                 Token::e => {
                     let mut e = [0u8;DHLEN];
-                    message.read_exact(&mut e)?;
-                    if self.re.is_none() {
-                        self.re = None;
+                    match message.read_exact(&mut e) {
+                        Ok(_) => (),
+                        Err(e) => println!("error: {}", e),
+                    };
+                    if self.re.is_some() {
                         return Err(NoiseError::WrongState);
                     } else {
                         self.re = Some(PublicKey::from(e));
@@ -580,9 +587,18 @@ impl HandshakeState {
                 
                 Token::ss => self.symmetricstate.MixKey(DH(self.s.clone(), self.rs.unwrap())),
             };
-            let mut buf = Vec::new();
-            message.read_to_end(&mut buf)?;
-            payload_buffer.write_all(&buf)?;
+            let mut buf = [0u8;1040];
+            println!("here!");
+            std::thread::sleep(Duration::from_secs(1));
+            match message.read_exact(&mut buf) {
+                Ok(_) => (),
+                Err(e) => {
+                    println!("error: {}", e);
+                    println!("buf: {:x?}", buf);
+                    panic!("Panicked here")
+                },
+            };
+            payload_buffer.write_all(&self.symmetricstate.DecryptAndHash(&buf)?)?;
         }
         let (c1, c2) = self.symmetricstate.Split();
         Ok((c1, c2))
@@ -603,15 +619,26 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub fn send(&mut self, message: impl Read) {
+    pub fn send(&mut self, message: &[u8]) -> Result<(), NoiseError> {
+        let ciphertext = self.sender.EncryptWithAd(&[], message);
+        self.stream.write_all(&ciphertext)?;
+        Ok(())
+    }
 
+    pub fn receive(&mut self) -> Result<Vec<u8>, NoiseError> {
+        let mut buffer = Vec::new();
+        let mut length = [0u8;8];
+        self.stream.read_exact(&mut length)?;
+        let length = usize::from_le_bytes(length);
+        let mut bytes_read = 0;
+        while bytes_read < length {
+            bytes_read += self.stream.read(&mut buffer)?;
+        }
+        Ok(buffer)
     }
 }
 
-pub fn initiate_connection(address: &str, username: &str, password: &str) -> Result<Connection, NoiseError> {
-    if !(username.len() <= 512 && password.len() <= 512) {
-        return Err(NoiseError::WrongState)
-    }
+pub fn initiate_connection(address: &str, payload: &[u8]) -> Result<Connection, NoiseError> {
     let mut stream = TcpStream::connect(address)?;
     let mut rs = [0u8;32];
     stream.read_exact(&mut rs)?;
@@ -624,10 +651,8 @@ pub fn initiate_connection(address: &str, username: &str, password: &str) -> Res
         Some(PublicKey::from(rs)),
         None
     );
-    let mut auth_buffer = [0u8;1024];
-    auth_buffer[0..username.len()].copy_from_slice(username.as_bytes());
-    auth_buffer[512..password.len()].copy_from_slice(password.as_bytes());
-    let (sender, receiver) = handshake_state.WriteMessage(&auth_buffer, &mut stream)?;
+    
+    let (sender, receiver) = handshake_state.WriteMessage(payload, &mut stream)?;
 
     Ok(
         Connection {
@@ -640,7 +665,7 @@ pub fn initiate_connection(address: &str, username: &str, password: &str) -> Res
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, net::TcpListener};
 
     use super::*;
 
@@ -677,5 +702,52 @@ mod tests {
     #[test]
     fn protocol_name_length() {
         println!("{}", PROTOCOL_NAME.len());
+    }
+
+    #[test]
+    fn test_server() {
+        let private = StaticSecret::random();
+        let public = PublicKey::from(&private).as_bytes().clone();
+        let private = private.as_bytes().clone();
+
+        let listener = TcpListener::bind("127.0.0.1:5000").unwrap();
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            stream.write(&public).unwrap();
+            let mut handshakestate = HandshakeState::Initialize(
+                false, &[],
+                KeyPair{public_key: Some(public), private_key: Some(private) },
+                KeyPair::empty(),
+                None,
+                None,
+            );
+            let mut payload_buffer = Vec::new();
+            handshakestate.ReadMessage(&mut stream, &mut payload_buffer).unwrap();
+
+            println!("payload: \n{:x?}", payload_buffer);
+        }
+    }
+
+    #[test]
+    fn test_client() {
+        let private = StaticSecret::random();
+        let public = PublicKey::from(&private).as_bytes().clone();
+        let private = private.as_bytes().clone();
+
+        let mut stream = TcpStream::connect("127.0.0.1:5000").unwrap();
+        let mut rs = [0u8;32];
+        stream.read(&mut rs).unwrap();
+
+        let mut handshakestate = HandshakeState::Initialize(
+            true,
+            &[],
+            KeyPair{private_key: Some(private), public_key: Some(public)},
+            KeyPair::empty(),
+            Some(PublicKey::from(rs)),
+            None,
+        );
+
+        let payload = [0xFF;1024];
+        handshakestate.WriteMessage(&payload, &mut stream).unwrap();
     }
 }
