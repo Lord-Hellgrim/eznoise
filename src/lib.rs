@@ -621,15 +621,24 @@ pub fn array32_from_slice(slice: &[u8]) -> [u8;32] {
 }
 
 pub struct Connection {
-    sender: CipherState,
-    receiver: CipherState,
+    c1: CipherState,
+    c2: CipherState,
     stream: TcpStream,
+    peer: String,
+}
+
+enum Cstate {
+    C1,
+    C2
 }
 
 impl Connection {
-    pub fn send(&mut self, message: &[u8]) -> Result<(), NoiseError> {
+    fn __send(&mut self, message: &[u8], state: Cstate) -> Result<(), NoiseError> {
         let mut buffer = Vec::with_capacity(message.len() + 16);
-        let ciphertext = self.sender.EncryptWithAd(&[], message);
+        let ciphertext = match state {
+            Cstate::C1 => self.c1.EncryptWithAd(&[], message),
+            Cstate::C2 => self.c2.EncryptWithAd(&[], message),
+        } ;
         buffer.extend_from_slice(&ciphertext.len().to_le_bytes());
         buffer.extend_from_slice(&ciphertext);
         self.stream.write_all(&buffer)?;
@@ -637,7 +646,7 @@ impl Connection {
         Ok(())
     }
 
-    pub fn receive(&mut self) -> Result<Vec<u8>, NoiseError> {
+    fn __receive(&mut self, state: Cstate) -> Result<Vec<u8>, NoiseError> {
         let mut size_buffer: [u8; 8] = [0; 8];
         self.stream.read_exact(&mut size_buffer)?;
     
@@ -659,10 +668,31 @@ impl Connection {
             total_read += bytes_received;
         }
 
-        let data = self.sender.DecryptWithAd(&[], &data)?;
+        let data = match state {
+            Cstate::C1 => self.c1.DecryptWithAd(&[], &data)?,
+            Cstate::C2 => self.c2.DecryptWithAd(&[], &data)?,
+
+        };
 
         Ok(data)
     }
+
+    pub fn send_c1(&mut self, message: &[u8]) -> Result<(), NoiseError> {
+        self.__send(message, Cstate::C1)
+    }
+
+    pub fn send_c2(&mut self, message: &[u8]) -> Result<(), NoiseError> {
+        self.__send(message, Cstate::C2)
+    }
+
+    pub fn receive_c1(&mut self) -> Result<Vec<u8>, NoiseError> {
+        self.__receive(Cstate::C1)
+    }
+
+    pub fn receive_c2(&mut self) -> Result<Vec<u8>, NoiseError> {
+        self.__receive(Cstate::C2)
+    }
+
 }
 
 pub fn initiate_connection(address: &str) -> Result<Connection, NoiseError> {
@@ -687,12 +717,13 @@ pub fn initiate_connection(address: &str) -> Result<Connection, NoiseError> {
     let res = handshake_state.WriteMessage(&mut stream)?;
 
     match res {
-        Some((sender, receiver)) => {
+        Some((c1, c2)) => {
             Ok(
                 Connection {
-                    sender,
-                    receiver,
+                    c1,
+                    c2,
                     stream,
+                    peer: String::new()
                 }
             )
         },
@@ -700,7 +731,8 @@ pub fn initiate_connection(address: &str) -> Result<Connection, NoiseError> {
     }
 }
 
-pub fn establish_connection(handshakestate: &mut HandshakeState, mut stream: TcpStream) -> Result<Connection, NoiseError> {
+pub fn establish_connection(mut stream: TcpStream, s: KeyPair) -> Result<Connection, NoiseError> {
+    let mut handshakestate = HandshakeState::Initialize(false, &[], s, KeyPair::empty(), None, None);
     // <- e
     handshakestate.ReadMessage(&mut stream)?;
 
@@ -718,12 +750,13 @@ pub fn establish_connection(handshakestate: &mut HandshakeState, mut stream: Tcp
 
     println!("returning Connection!!");
     match res {
-        Some((sender, receiver)) => {
+        Some((c1, c2)) => {
             Ok(
                 Connection {
-                    sender,
-                    receiver,
+                    c1,
+                    c2,
                     stream,
+                    peer: String::new()
                 }
             )
         },
@@ -788,13 +821,12 @@ mod tests {
     #[test]
     fn test_server() {
         let s = KeyPair::random();
-        let mut handshakestate = HandshakeState::Initialize(false, &[], s, KeyPair::empty(), None, None);
         let listener = TcpListener::bind("127.0.0.1:5000").unwrap();
         for stream in listener.incoming() {
             let stream = stream.unwrap();
             println!("HELLO!!!");
-            let mut connection = establish_connection(&mut handshakestate, stream).unwrap();
-            let data = connection.receive().unwrap();
+            let mut connection = establish_connection(stream, s.clone()).unwrap();
+            let data = connection.receive_c1().unwrap();
             println!("{:x?}", data);
         }
     }
@@ -802,8 +834,8 @@ mod tests {
     #[test]
     fn test_client() {
         let mut connection = initiate_connection("127.0.0.1:5000").unwrap();
-        connection.send(&[1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0]).unwrap();
-        let thing = connection.receive().unwrap();
+        connection.send_c1(&[1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0]).unwrap();
+        let thing = connection.receive_c1().unwrap();
         let thing = unsafe {String::from_utf8_unchecked(thing) };
         println!("{:x?}", thing)
 
