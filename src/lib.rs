@@ -621,10 +621,10 @@ pub fn array32_from_slice(slice: &[u8]) -> [u8;32] {
 }
 
 pub struct Connection {
-    c1: CipherState,
-    c2: CipherState,
-    stream: TcpStream,
-    peer: String,
+    pub c1: CipherState,
+    pub c2: CipherState,
+    pub stream: TcpStream,
+    pub peer: String,
 }
 
 enum Cstate {
