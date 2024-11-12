@@ -2,6 +2,7 @@
 #![feature(concat_bytes)]
 #![feature(portable_simd)]
 
+use std::collections::VecDeque;
 use std::net::TcpStream;
 use std::{io::Write, u64};
 use std::io::Read;
@@ -266,7 +267,7 @@ pub struct HandshakeState {
     rs: Option<PublicKey>,
     re: Option<PublicKey>,
     initiator: bool,
-    message_patterns: Vec<Vec<Token>>
+    message_patterns: VecDeque<Vec<Token>>
 }
 
 impl CipherState {
@@ -449,11 +450,11 @@ impl HandshakeState {
         rs: Option<PublicKey>,
         re: Option<PublicKey>
     ) -> HandshakeState {
-        let handshake_pattern_NK = vec![
+        let handshake_pattern_NK = VecDeque::from([
             vec![Token::e],
             vec![Token::e, Token::ee, Token::s, Token::es],
             vec![Token::s, Token::se]
-        ];
+        ]);
 
         let mut symmetricstate = SymmetricState::InitializeSymmetric(&PROTOCOL_NAME);
         symmetricstate.MixHash(prologue);
@@ -492,7 +493,7 @@ impl HandshakeState {
     
     /// If there are no more message patterns returns two new CipherState objects by calling Split().
     pub fn WriteMessage(&mut self, mut message_buffer: impl Write) -> Result<Option<(CipherState, CipherState)>, NoiseError> {
-        let pattern = self.message_patterns.remove(0);
+        let pattern = self.message_patterns.pop_front().expect(&format!("Should never be empty: Line: {}, Column: {}", line!(), column!()));
         for token in pattern {
             match token {
                 Token::e => {
@@ -558,7 +559,7 @@ impl HandshakeState {
     
     /// If there are no more message patterns returns two new CipherState objects by calling Split().
     pub fn ReadMessage(&mut self, mut message: impl Read)  -> Result<Option<(CipherState, CipherState)>, NoiseError> {
-        let pattern = self.message_patterns.remove(0);
+        let pattern = self.message_patterns.pop_front().expect(&format!("Should never be empty: Line: {}, Column: {}", line!(), column!()));
         for token in pattern {
             match token {
                 Token::e => {
@@ -732,21 +733,35 @@ pub fn initiate_connection(address: &str) -> Result<Connection, NoiseError> {
 }
 
 pub fn establish_connection(mut stream: TcpStream, s: KeyPair) -> Result<Connection, NoiseError> {
+    let handshakestate = establish_connection_step_1(&mut stream, s)?;
+
+    let handshakestate = establish_connection_step_2(&mut stream, handshakestate)?;
+
+    let connection = establish_connection_step_3(stream, handshakestate)?;
+
+    Ok(connection)
+
+}
+
+pub fn establish_connection_step_1(stream: &mut TcpStream, s: KeyPair) -> Result<HandshakeState, NoiseError> {
     let mut handshakestate = HandshakeState::Initialize(false, &[], s, KeyPair::empty(), None, None);
+
     // <- e
-    handshakestate.ReadMessage(&mut stream)?;
+    handshakestate.ReadMessage(stream)?;
 
-    // -> e, ee, s, es
-    handshakestate.WriteMessage(&mut stream)?;
+    Ok(handshakestate)
+}
 
+pub fn establish_connection_step_2(stream: &mut TcpStream, mut handshakestate: HandshakeState) -> Result<HandshakeState, NoiseError> {
+    
+    handshakestate.WriteMessage(stream)?;
+
+    Ok(handshakestate)
+}
+
+pub fn establish_connection_step_3(mut stream: TcpStream, mut handshakestate: HandshakeState) -> Result<Connection, NoiseError> {
     // <- s, se
     let res = handshakestate.ReadMessage(&mut stream)?;
-
-    handshakestate.message_patterns = vec![
-        vec![Token::e],
-        vec![Token::e, Token::ee, Token::s, Token::es],
-        vec![Token::s, Token::se]
-    ];
 
     println!("returning Connection!!");
     match res {
@@ -762,8 +777,9 @@ pub fn establish_connection(mut stream: TcpStream, s: KeyPair) -> Result<Connect
         },
         None => Err(NoiseError::Io),
     }
-
 }
+
+
 
 #[cfg(test)]
 mod tests {
