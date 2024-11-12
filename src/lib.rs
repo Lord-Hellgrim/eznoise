@@ -678,19 +678,19 @@ impl Connection {
         Ok(data)
     }
 
-    pub fn send_c1(&mut self, message: &[u8]) -> Result<(), NoiseError> {
+    pub fn SEND_C1(&mut self, message: &[u8]) -> Result<(), NoiseError> {
         self.__send(message, Cstate::C1)
     }
 
-    pub fn send_c2(&mut self, message: &[u8]) -> Result<(), NoiseError> {
+    pub fn SEND_C2(&mut self, message: &[u8]) -> Result<(), NoiseError> {
         self.__send(message, Cstate::C2)
     }
 
-    pub fn receive_c1(&mut self) -> Result<Vec<u8>, NoiseError> {
+    pub fn RECEIVE_C1(&mut self) -> Result<Vec<u8>, NoiseError> {
         self.__receive(Cstate::C1)
     }
 
-    pub fn receive_c2(&mut self) -> Result<Vec<u8>, NoiseError> {
+    pub fn RECEIVE_C2(&mut self) -> Result<Vec<u8>, NoiseError> {
         self.__receive(Cstate::C2)
     }
 
@@ -732,18 +732,18 @@ pub fn initiate_connection(address: &str) -> Result<Connection, NoiseError> {
     }
 }
 
-pub fn establish_connection(mut stream: TcpStream, s: KeyPair) -> Result<Connection, NoiseError> {
-    let handshakestate = establish_connection_step_1(&mut stream, s)?;
+pub fn ESTABLISH_CONNECTION(mut stream: TcpStream, s: KeyPair) -> Result<Connection, NoiseError> {
+    let handshakestate = ESTABLISH_CONNECTION_STEP_1(&mut stream, s)?;
 
-    let handshakestate = establish_connection_step_2(&mut stream, handshakestate)?;
+    let handshakestate = ESTABLISH_CONNECTION_STEP_2(&mut stream, handshakestate)?;
 
-    let connection = establish_connection_step_3(stream, handshakestate)?;
+    let connection = ESTABLISH_CONNECTION_STEP_3(stream, handshakestate)?;
 
     Ok(connection)
 
 }
 
-pub fn establish_connection_step_1(stream: &mut TcpStream, s: KeyPair) -> Result<HandshakeState, NoiseError> {
+pub fn ESTABLISH_CONNECTION_STEP_1(stream: &mut TcpStream, s: KeyPair) -> Result<HandshakeState, NoiseError> {
     let mut handshakestate = HandshakeState::Initialize(false, &[], s, KeyPair::empty(), None, None);
 
     // <- e
@@ -752,14 +752,14 @@ pub fn establish_connection_step_1(stream: &mut TcpStream, s: KeyPair) -> Result
     Ok(handshakestate)
 }
 
-pub fn establish_connection_step_2(stream: &mut TcpStream, mut handshakestate: HandshakeState) -> Result<HandshakeState, NoiseError> {
+pub fn ESTABLISH_CONNECTION_STEP_2(stream: &mut TcpStream, mut handshakestate: HandshakeState) -> Result<HandshakeState, NoiseError> {
     
     handshakestate.WriteMessage(stream)?;
 
     Ok(handshakestate)
 }
 
-pub fn establish_connection_step_3(mut stream: TcpStream, mut handshakestate: HandshakeState) -> Result<Connection, NoiseError> {
+pub fn ESTABLISH_CONNECTION_STEP_3(mut stream: TcpStream, mut handshakestate: HandshakeState) -> Result<Connection, NoiseError> {
     // <- s, se
     let res = handshakestate.ReadMessage(&mut stream)?;
 
@@ -841,8 +841,8 @@ mod tests {
         for stream in listener.incoming() {
             let stream = stream.unwrap();
             println!("HELLO!!!");
-            let mut connection = establish_connection(stream, s.clone()).unwrap();
-            let data = connection.receive_c1().unwrap();
+            let mut connection = ESTABLISH_CONNECTION(stream, s.clone()).unwrap();
+            let data = connection.RECEIVE_C1().unwrap();
             println!("{:x?}", data);
         }
     }
@@ -850,8 +850,8 @@ mod tests {
     #[test]
     fn test_client() {
         let mut connection = initiate_connection("127.0.0.1:5000").unwrap();
-        connection.send_c1(&[1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0]).unwrap();
-        let thing = connection.receive_c1().unwrap();
+        connection.SEND_C1(&[1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0]).unwrap();
+        let thing = connection.RECEIVE_C1().unwrap();
         let thing = unsafe {String::from_utf8_unchecked(thing) };
         println!("{:x?}", thing)
 
