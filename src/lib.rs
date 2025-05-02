@@ -27,6 +27,17 @@ pub const MAX_PACKET_SIZE: usize = 65535;
 
 pub const PROTOCOL_NAME: &'static str = "Noise_NK_25519_AESGCM_SHA512";
 
+
+/// Gets the current time as seconds since UNIX_EPOCH. Used for logging, mostly.
+#[inline]
+pub fn get_current_time() -> u64 {
+    
+    std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
 #[derive(Clone, Debug)]
 pub struct KeyPair {
     public_key: Option<[u8;32]>,
@@ -626,6 +637,7 @@ pub struct Connection {
     pub c2: CipherState,
     pub stream: TcpStream,
     pub peer: String,
+    pub opened: u64,
 }
 
 enum Cstate {
@@ -724,7 +736,8 @@ pub fn initiate_connection(address: &str) -> Result<Connection, NoiseError> {
                     c1,
                     c2,
                     stream,
-                    peer: String::new()
+                    peer: String::new(),
+                    opened: get_current_time(),
                 }
             )
         },
@@ -771,7 +784,8 @@ pub fn ESTABLISH_CONNECTION_STEP_3(mut stream: TcpStream, mut handshakestate: Ha
                     c1,
                     c2,
                     stream,
-                    peer: String::new()
+                    peer: String::new(),
+                    opened: get_current_time(),
                 }
             )
         },
